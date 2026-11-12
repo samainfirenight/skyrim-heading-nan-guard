@@ -1,6 +1,6 @@
 {
   "name": "heading-nan-guard",
-  "version-string": "1.0.0",
+  "version-string": "1.0.2",
   "description": "CommonLibSSE-NG v8.3.0's dependencies (tests off), pinned to its vcpkg baseline.",
   "dependencies": ["simpleini", "rsm-binary-io", "directxtk", "rapidcsv", "spdlog"],
   "vcpkg-configuration": {

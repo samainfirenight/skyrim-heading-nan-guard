@@ -1,16 +1,7 @@
-// Heading NaN Guard 1.0.1 -- stops a class of permanent freezes in Skyrim SE/AE (public domain, see LICENSE).
-//
-// The engine's vector -> heading helper (Address Library ID 70172; 1.6.1170 RVA 0xD17400) computes atan(x/y), adds pi when
-// y < 0, then wraps the angle into [0, 2pi] with `while (a < 0) a += 2pi;`. Every comparison with NaN is "unordered", so
-// a NaN input makes that loop spin forever. It runs on the AI/movement job threads (MovementControllerAI ->
-// IMovementPathManagerAgent -> MovementPlannerArbiter -> path follower update, ID 90711), and the main thread then waits
-// for that job forever (WaitForJobTask, ID 69516): the game freezes with no crash log. Any mod that hands an actor a NaN
-// movement direction can trigger it.
-//
-// This plugin replaces the helper with the same maths (atan(x / y), +pi when y < 0; y == 0: pi/2 when x > 0, else 3pi/2;
-// wrapped into [0, 2pi]) and returns 0 for a NaN/infinite input, logging the caller (Documents/My Games/Skyrim Special
-// Edition/SKSE/HeadingNaNGuard.log) so the source of the NaN can be traced. The patch is only applied when the function's
-// first bytes match the 1.6.1170 code; otherwise it logs and does nothing.
+// Heading NaN Guard 1.0.2 -- Skyrim SE/AE 1.6.353 build (public domain, see LICENSE).
+// Replaces the vector-to-heading helper with the upstream NaN-safe calculation.
+// The entire 1.6.353 helper was checked against the supplied executable; see
+// docs/runtime-1.6.353.md. No game structures or Address Library IDs are used.
 #include <RE/Skyrim.h>
 #include <SKSE/SKSE.h>
 #include <spdlog/sinks/basic_file_sink.h>
@@ -78,9 +69,21 @@ namespace
 	bool Install()
 	{
 		g_base = REL::Module::get().base();
-		REL::Relocation<std::uintptr_t> target{ REL::ID(70172) };
-		// 1.6.1170 prologue: sub rsp,58h / movss xmm0,[rcx] / movaps [rsp+40h],xmm6
-		constexpr std::uint8_t expected[] = { 0x48, 0x83, 0xEC, 0x58, 0xF3, 0x0F, 0x10, 0x01, 0x0F, 0x29, 0x74, 0x24, 0x40 };
+		REL::Relocation<std::uintptr_t> target{ REL::Offset(0xC7A230) };
+		// All 158 bytes through RET, including relative operands, from Skyrim 1.6.353.0.
+		// Reject an unexpected executable or an existing patch anywhere in this helper.
+		constexpr std::uint8_t expected[] = {
+			0x48, 0x83, 0xEC, 0x58, 0xF3, 0x0F, 0x10, 0x01, 0x0F, 0x29, 0x74, 0x24, 0x40, 0xF3, 0x0F, 0x10,
+			0x35, 0xFB, 0xE2, 0x9A, 0x00, 0x0F, 0x29, 0x7C, 0x24, 0x30, 0x0F, 0x57, 0xFF, 0x44, 0x0F, 0x29,
+			0x44, 0x24, 0x20, 0xF3, 0x44, 0x0F, 0x10, 0x41, 0x04, 0x44, 0x0F, 0x2E, 0xC7, 0x74, 0x1A, 0xF3,
+			0x41, 0x0F, 0x5E, 0xC0, 0xE8, 0x2B, 0xE4, 0x7F, 0x00, 0x44, 0x0F, 0x2F, 0xC7, 0x73, 0x21, 0xF3,
+			0x0F, 0x58, 0x05, 0xC5, 0xE2, 0x9A, 0x00, 0xEB, 0x17, 0x0F, 0x2F, 0xC7, 0x76, 0x0A, 0xF3, 0x0F,
+			0x10, 0x05, 0x9A, 0xB4, 0x9D, 0x00, 0xEB, 0x16, 0xF3, 0x0F, 0x10, 0x05, 0x70, 0x9B, 0x9E, 0x00,
+			0x0F, 0x2F, 0xC7, 0x73, 0x09, 0xF3, 0x0F, 0x58, 0xC6, 0x0F, 0x2F, 0xC7, 0x72, 0xF7, 0x0F, 0x2F,
+			0xC6, 0x76, 0x16, 0xF3, 0x0F, 0x10, 0x0D, 0xA1, 0x4E, 0x9D, 0x00, 0x0F, 0x1F, 0x44, 0x00, 0x00,
+			0xF3, 0x0F, 0x58, 0xC1, 0x0F, 0x2F, 0xC6, 0x77, 0xF7, 0x0F, 0x28, 0x74, 0x24, 0x40, 0x0F, 0x28,
+			0x7C, 0x24, 0x30, 0x44, 0x0F, 0x28, 0x44, 0x24, 0x20, 0x48, 0x83, 0xC4, 0x58, 0xC3,
+		};
 		if (std::memcmp(reinterpret_cast<const void*>(target.address()), expected, sizeof(expected)) != 0) {
 			SKSE::log::error("heading helper at SkyrimSE.exe+{:X} doesn't match the expected code: NOT patched", target.address() - g_base);
 			return false;
@@ -94,28 +97,29 @@ namespace
 
 extern "C" __declspec(dllexport) constinit auto SKSEPlugin_Version = []() {
 	SKSE::PluginVersionData v;
-	v.PluginVersion(REL::Version(1, 0, 1, 0));
+	v.PluginVersion(REL::Version(1, 0, 2, 0));
 	v.PluginName("HeadingNaNGuard");
 	v.AuthorName("WhiteLionNeren & Claude");
-	v.UsesAddressLibrary();
-	v.UsesUpdatedStructs();
-	v.CompatibleVersions({ SKSE::RUNTIME_SSE_LATEST });
+	v.versionIndependenceEx = SKSE::PluginVersionData::kVersionIndependentEx_NoStructUse;
+	v.CompatibleVersions({ SKSE::RUNTIME_SSE_1_6_353 });
 	return v;
 }();
 
-extern "C" __declspec(dllexport) bool SKSEPlugin_Query(const SKSE::QueryInterface*, SKSE::PluginInfo* a_info)
+extern "C" __declspec(dllexport) bool SKSEPlugin_Query(const SKSE::QueryInterface* a_skse, SKSE::PluginInfo* a_info)
 {
 	a_info->infoVersion = SKSE::PluginInfo::kVersion;
 	a_info->name = "HeadingNaNGuard";
-	a_info->version = 1;
-	return true;
+	a_info->version = REL::Version(1, 0, 2, 0).pack();
+	return !a_skse->IsEditor() && a_skse->RuntimeVersion() == SKSE::RUNTIME_SSE_1_6_353;
 }
 
 extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface* a_skse)
 {
+	if (a_skse->IsEditor() || a_skse->RuntimeVersion() != SKSE::RUNTIME_SSE_1_6_353) {
+		return false;
+	}
 	SKSE::Init(a_skse, false);
 	SetupLog();
-	SKSE::log::info("Heading NaN Guard 1.0.1");
-	Install();
-	return true;
+	SKSE::log::info("Heading NaN Guard 1.0.2 for Skyrim 1.6.353.0");
+	return Install();
 }
